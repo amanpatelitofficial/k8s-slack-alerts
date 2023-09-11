@@ -1,0 +1,124 @@
+# prometheus-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    global:
+      slack_api_url: <YOUR_SLACK_WEBHOOK_URL>
+
+# prometheus-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.30.3
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--web.enable-lifecycle"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}
+
+# prometheus-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    role: prometheus-rulefiles
+    prometheus: k8s-prometheus
+  name: example-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: example
+      rules:
+        - alert: HighCpuUsage
+          expr: sum(rate(container_cpu_usage_seconds_total{container!="POD",pod=~"your-app.*"}[1m])) by (pod) > 0.8
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            description: 'High CPU usage detected on pod {{ $labels.pod }}'
+            summary: 'High CPU usage on {{ $labels.pod }}'
+            slack_channel: '#alerts'
+
+# alertmanager-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: slack
+
+    receivers:
+      - name: slack
+        slack_configs:
+          - api_url: '{{ .Values.alertmanager.slack_api_url }}'
+            channel: '{{ .Values.alertmanager.slack_channel }}'
+            send_resolved: true
+
+# alertmanager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: quay.io/prometheus/alertmanager:v0.22.2
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+          ports:
+            - containerPort: 9093
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/alertmanager
+      volumes:
+        - name: config-volume
+          configMap:
+            name: alertmanager-config
+
